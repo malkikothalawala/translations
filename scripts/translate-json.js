@@ -1,7 +1,6 @@
 // scripts/translate-json.js
-// Node 18+ (uses built-in fetch). Robust against odd Google responses.
-// Translates all string leaves from SOURCE_JSON to TARGET_JSON,
-// preserving structure and pruning deleted keys.
+// Node 18+ ESM. No deps. Single-call-per-string.
+// Only translates keys whose English value is new or changed vs last run.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,16 +9,18 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ---- Config (env-driven) ----
+// ---- Config (env) ----
 const SOURCE_JSON = process.env.SOURCE_JSON || 'locales/en.json';
 const TARGET_JSON = process.env.TARGET_JSON || 'locales/sv-SE.json';
-const SOURCE_LANG = (process.env.SOURCE_LANG || 'en').toLowerCase(); // e.g., 'en' or 'en-gb'
-const TARGET_LANG = (process.env.TARGET_LANG || 'sv').toLowerCase(); // e.g., 'sv' or 'sv-se'
-
-// Optional: trim surrounding quotes in source strings (helpful if your data has stray " or ').
+const SOURCE_LANG = (process.env.SOURCE_LANG || 'en').toLowerCase();  // e.g. en or en-gb
+const TARGET_LANG = (process.env.TARGET_LANG || 'sv').toLowerCase();  // e.g. sv or sv-se
 const STRIP_SURROUNDING_QUOTES = (process.env.STRIP_QUOTES || 'true') === 'true';
 
-// Unofficial endpoint (no key). For production, prefer Google Cloud Translate API.
+// Where to store "path -> last English text" cache (per target lang)
+const CACHE_FILE =
+  process.env.I18N_CACHE ||
+  path.join(path.dirname(TARGET_JSON), `.i18n-cache.${TARGET_LANG}.json`);
+
 const ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
 
 // ---- JSON helpers ----
@@ -94,6 +95,11 @@ function readJSONSafe(fp) {
   return JSON.parse(fs.readFileSync(fp, 'utf8'));
 }
 
+function writePretty(fp, obj) {
+  fs.mkdirSync(path.dirname(fp), { recursive: true });
+  fs.writeFileSync(fp, JSON.stringify(obj, null, 2) + '\n');
+}
+
 function writeIfChanged(fp, obj) {
   const pretty = JSON.stringify(obj, null, 2) + '\n';
   const old = fs.existsSync(fp) ? fs.readFileSync(fp, 'utf8') : '';
@@ -105,24 +111,20 @@ function writeIfChanged(fp, obj) {
   return false;
 }
 
-// ---- Translation helpers ----
-
-// Unique delimiter to chunk results deterministically
-const DELIM = '⟦§§__CUT_HERE__§§⟧';
-
-// Retry with exponential backoff for transient HTTP errors/rate limits
-async function withRetries(fn, { retries = 4, minDelayMs = 500 } = {}) {
+// ---- Translate (single call per string) ----
+async function withRetries(fn, { retries = 3, minDelayMs = 400 } = {}) {
   let lastErr;
   for (let i = 0; i <= retries; i++) {
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
-      // Only back off on network/5xx/429 errors; otherwise, rethrow immediately
+      const status = err?.status;
       const msg = String(err?.message || '');
-      const shouldRetry =
-        /ECONNRESET|ETIMEDOUT|502|503|504|429/.test(msg) || (err.status && [429, 500, 502, 503, 504].includes(err.status));
-      if (!shouldRetry || i === retries) break;
+      const retryable =
+        status ? [429, 500, 502, 503, 504].includes(status)
+               : /ECONNRESET|ETIMEDOUT|network|fetch/i.test(msg);
+      if (!retryable || i === retries) break;
       const wait = minDelayMs * Math.pow(2, i);
       await new Promise(r => setTimeout(r, wait));
     }
@@ -130,19 +132,13 @@ async function withRetries(fn, { retries = 4, minDelayMs = 500 } = {}) {
   throw lastErr;
 }
 
-// Safer: translate one big joined string, then split back by markers
-async function translateBatchViaJoin(texts, sl, tl) {
-  if (!texts.length) return [];
-
-  // Mark each input so we can reconstruct 1:1 even if Google mutates array shape.
-  const joined = texts.map((t, i) => `${DELIM}${i}${DELIM}${t}`).join('');
-
+async function translateOne(text, sl, tl) {
   const params = new URLSearchParams();
   params.set('client', 'gtx');
   params.set('sl', sl);
   params.set('tl', tl);
   params.set('dt', 't');
-  params.set('q', joined);
+  params.set('q', text);
 
   const url = `${ENDPOINT}?${params.toString()}`;
 
@@ -157,69 +153,73 @@ async function translateBatchViaJoin(texts, sl, tl) {
     return res.json();
   });
 
-  // data looks like: [ [ [ translatedText, originalText, ... ], ... ], ... ]
-  const segs = Array.isArray(data?.[0]) ? data[0] : [];
-  const translatedJoined = segs
-    .filter(Array.isArray) // skip nulls
-    .map(s => (Array.isArray(s) ? (s[0] ?? '') : ''))
+  // Shape: [ [ [ translatedText, originalText, ... ], ... ], ... ]
+  const segs = Array.isArray(data?.[0]) ? data[0] : null;
+  if (!Array.isArray(segs)) return text; // fallback to English if weird
+
+  const translated = segs
+    .filter(Array.isArray)
+    .map(s => s?.[0] ?? '')
     .join('');
 
-  // Re-split to per-input outputs
-  const parts = translatedJoined.split(DELIM).slice(1); // drop leading empty
-  const out = new Array(texts.length).fill('');
-  for (let i = 0; i < parts.length; i += 2) {
-    const idx = Number(parts[i]);
-    const chunk = parts[i + 1] ?? '';
-    if (!Number.isNaN(idx) && idx >= 0 && idx < out.length) out[idx] += chunk;
-  }
-  return out;
+  // Safety: if empty, keep English
+  return translated && translated.trim() !== '' ? translated : text;
 }
 
 function sanitizeSourceString(s) {
-  if (STRIP_SURROUNDING_QUOTES) {
-    return s.replace(/^['"]+|['"]+$/g, '');
-  }
-  return s;
+  return STRIP_SURROUNDING_QUOTES ? s.replace(/^['"]+|['"]+$/g, '') : s;
 }
 
-async function translateAll(map, sl, tl, batchSize = 40) {
-  const keys = Object.keys(map);
-  const values = keys.map(k => sanitizeSourceString(map[k]));
-
-  const out = {};
-  for (let i = 0; i < values.length; i += batchSize) {
-    const slice = values.slice(i, i + batchSize);
-    const translated = await translateBatchViaJoin(slice, sl, tl);
-    translated.forEach((t, j) => {
-      out[keys[i + j]] = t;
-    });
-  }
-  return out;
-}
-
-// ---- Main ----
+// ---- Main: only translate changed/added strings ----
 (async function main() {
-  const src = readJSONSafe(SOURCE_JSON);
-  if (!src) {
+  const srcObj = readJSONSafe(SOURCE_JSON);
+  if (!srcObj) {
     console.error(`Source JSON not found: ${SOURCE_JSON}`);
     process.exit(1);
   }
 
-  const flat = flatten(src);
+  const flatEn = flatten(srcObj);
+  if (Object.keys(flatEn).length === 0) {
+    console.log('No string leaves found in source JSON. Nothing to translate.');
+    process.exit(0);
+  }
 
-  // Translate
-  const translatedMap = await translateAll(flat, SOURCE_LANG, TARGET_LANG);
+  const prevTargetObj = readJSONSafe(TARGET_JSON) || {};
+  const flatPrevTarget = flatten(prevTargetObj); // may be empty on first run
 
-  // Rebuild nested structure; this also prunes deleted keys automatically
-  const targetObj = inflate(translatedMap);
+  const cache = readJSONSafe(CACHE_FILE) || {}; // path -> last English string we translated
 
-  // Write if changed
+  const outMap = {};
+  let translatedCount = 0;
+  let reusedCount = 0;
+
+  for (const [pathKey, enValRaw] of Object.entries(flatEn)) {
+    const enVal = sanitizeSourceString(enValRaw);
+    const lastEn = cache[pathKey];
+    const prevTranslated = flatPrevTarget[pathKey];
+
+    if (lastEn === enVal && typeof prevTranslated === 'string' && prevTranslated.trim() !== '') {
+      // English unchanged since last translation ⇒ reuse
+      outMap[pathKey] = prevTranslated;
+      reusedCount++;
+      continue;
+    }
+
+    // New key or English changed ⇒ translate once
+    const svVal = await translateOne(enVal, SOURCE_LANG, TARGET_LANG);
+    outMap[pathKey] = svVal;
+    cache[pathKey] = enVal;
+    translatedCount++;
+  }
+
+  // Rebuild nested target and write files
+  const targetObj = inflate(outMap);
   const changed = writeIfChanged(TARGET_JSON, targetObj);
+  writePretty(CACHE_FILE, cache);
 
   console.log(
-    changed
-      ? `Updated ${TARGET_JSON} with ${Object.keys(translatedMap).length} translated strings.`
-      : `No changes written to ${TARGET_JSON}.`
+    `Done. Translated: ${translatedCount}, Reused: ${reusedCount}, ` +
+    (changed ? `wrote ${TARGET_JSON}.` : `no changes to ${TARGET_JSON}.`)
   );
 })().catch(err => {
   console.error(err);
