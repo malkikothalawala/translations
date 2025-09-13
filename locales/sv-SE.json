@@ -1,7 +1,7 @@
 {
   "header": "Alla jobb",
-  "footer": "11 uppgifter",
   "screen": {
-    "name": "Uppgifter för idag"
+    "name": "Uppgifter för idag",
+    "label": "En etikett"
   }
 }
