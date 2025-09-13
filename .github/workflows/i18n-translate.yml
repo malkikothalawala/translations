@@ -84,7 +84,7 @@ jobs:
           if [[ -n "$(git status --porcelain)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add locales/sv-SE.json locales/fr-FR.json
+            git add locales/
             git commit -m "chore(i18n): translate changes"
             git push
           else
