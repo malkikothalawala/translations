@@ -1,5 +1,6 @@
 {
   "header": "All Jobs",
+  "footer" : "5 tasks",
   "screen": {
     "name": "Task"
   }
