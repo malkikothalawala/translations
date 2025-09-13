@@ -37,7 +37,7 @@ jobs:
             i18n-cache-
 
       # --- Swedish ---
-      - name: Translate en.json -> sv-SE.json (only changed keys)
+      - name: Translate en.json -> sv-SE.json
         env:
           SOURCE_JSON: locales/en.json
           TARGET_JSON: locales/sv-SE.json
@@ -48,7 +48,7 @@ jobs:
         run: node scripts/translate-json.js
 
       # --- French ---
-      - name: Translate en.json -> fr-FR.json (only changed keys)
+      - name: Translate en.json -> fr-FR.json
         env:
           SOURCE_JSON: locales/en.json
           TARGET_JSON: locales/fr-FR.json
@@ -58,7 +58,18 @@ jobs:
           I18N_CACHE: .i18n-cache/fr-FR.json
         run: node scripts/translate-json.js
 
-      # --- Save updated cache (only if we didn't restore an exact key hit) ---
+        # --- Danish ---
+      - name: Translate en.json -> da-DK.json
+        env:
+          SOURCE_JSON: locales/en.json
+          TARGET_JSON: locales/da-DK.json
+          SOURCE_LANG: en-GB
+          TARGET_LANG: da-DK
+          STRIP_QUOTES: "true"
+          I18N_CACHE: .i18n-cache/da-DK.json
+        run: node scripts/translate-json.js
+
+      # --- Save updated cache ---
       - name: Save i18n cache
         if: steps.restore-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -66,7 +77,7 @@ jobs:
           path: .i18n-cache
           key: i18n-cache-${{ github.ref_name }}
 
-      # --- Commit translations only (not the cache) ---
+      # --- Commit translations ---
       - name: Commit changes (if any)
         if: github.ref == 'refs/heads/main'
         run: |
