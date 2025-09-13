@@ -1,4 +1,6 @@
 {
-  "screen" : "Task",
-  "header" : "All Jobs",
+  "header": "All Jobs",
+  "screen": {
+    "name": "Task"
+  }
 }
