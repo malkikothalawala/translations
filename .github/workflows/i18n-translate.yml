@@ -1,0 +1,48 @@
+name: Auto-translate JSON
+
+on:
+  push:
+    paths:
+      - 'locales/en.json'
+  pull_request:
+    paths:
+      - 'locales/en.json'
+  workflow_dispatch:
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps (node-fetch)
+        run: npm i node-fetch@3
+
+      - name: Translate en.json -> sv-SE.json
+        env:
+          SOURCE_JSON: locales/en.json
+          TARGET_JSON: locales/sv-SE.json
+          SOURCE_LANG: en
+          TARGET_LANG: sv
+        run: node scripts/translate-json.js
+
+      - name: Commit changes (if any)
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add locales/sv-SE.json
+            git commit -m "chore(i18n): sync sv-SE.json with en.json"
+            git push
+          else
+            echo "No changes to commit."
+          fi
