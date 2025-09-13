@@ -25,12 +25,14 @@ jobs:
           node-version: '20'
 
       # --- Restore translation cache ---
-      # We'll keep a directory .i18n-cache that holds per-locale JSON files
       - name: Restore i18n cache
+        id: restore-cache
         uses: actions/cache@v4
         with:
           path: .i18n-cache
-          key: i18n-cache-${{ github.ref_name }}  # one cache per branch
+          # Optionally include content hash to version the cache:
+          # key: i18n-cache-${{ github.ref_name }}-${{ hashFiles('locales/en.json') }}
+          key: i18n-cache-${{ github.ref_name }}
           restore-keys: |
             i18n-cache-
 
@@ -42,7 +44,7 @@ jobs:
           SOURCE_LANG: en-GB
           TARGET_LANG: sv-SE
           STRIP_QUOTES: "true"
-          I18N_CACHE: .i18n-cache/sv-SE.json   # now stored only in cache
+          I18N_CACHE: .i18n-cache/sv-SE.json
         run: node scripts/translate-json.js
 
       # --- French ---
@@ -56,9 +58,9 @@ jobs:
           I18N_CACHE: .i18n-cache/fr-FR.json
         run: node scripts/translate-json.js
 
-      # --- Save updated cache ---
+      # --- Save updated cache (only if we didn't restore an exact key hit) ---
       - name: Save i18n cache
-        if: always()
+        if: steps.restore-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .i18n-cache
