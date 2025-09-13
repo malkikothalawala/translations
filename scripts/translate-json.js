@@ -1,28 +1,30 @@
 // scripts/translate-json.js
-// Node 20+, ESM fetch
+// Node 18+ (uses built-in fetch). Robust against odd Google responses.
+// Translates all string leaves from SOURCE_JSON to TARGET_JSON,
+// preserving structure and pruning deleted keys.
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import fetch from 'node-fetch';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ---- Config from env (with defaults) ----
+// ---- Config (env-driven) ----
 const SOURCE_JSON = process.env.SOURCE_JSON || 'locales/en.json';
 const TARGET_JSON = process.env.TARGET_JSON || 'locales/sv-SE.json';
-const SOURCE_LANG = (process.env.SOURCE_LANG || 'en').toLowerCase();    // e.g. 'en' or 'en-GB'
-const TARGET_LANG = (process.env.TARGET_LANG || 'sv').toLowerCase();    // e.g. 'sv' or 'sv-SE'
+const SOURCE_LANG = (process.env.SOURCE_LANG || 'en').toLowerCase(); // e.g., 'en' or 'en-gb'
+const TARGET_LANG = (process.env.TARGET_LANG || 'sv').toLowerCase(); // e.g., 'sv' or 'sv-se'
 
-// Unofficial endpoint (no key). For production, consider Google Cloud Translate API.
+// Optional: trim surrounding quotes in source strings (helpful if your data has stray " or ').
+const STRIP_SURROUNDING_QUOTES = (process.env.STRIP_QUOTES || 'true') === 'true';
+
+// Unofficial endpoint (no key). For production, prefer Google Cloud Translate API.
 const ENDPOINT = 'https://translate.googleapis.com/translate_a/single';
 
-// ---- Helpers ----
-function isPlainObject(v) {
-  return v && typeof v === 'object' && !Array.isArray(v);
-}
+// ---- JSON helpers ----
+const isPlainObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
 
-// Flatten nested JSON to key paths -> string values
 function flatten(obj, prefix = '') {
   const out = {};
   if (Array.isArray(obj)) {
@@ -47,17 +49,6 @@ function flatten(obj, prefix = '') {
   return out;
 }
 
-// Inflate key-path map back to nested structure
-function inflate(map) {
-  const root = {};
-  for (const [key, val] of Object.entries(map)) {
-    const parts = splitPath(key);
-    setPath(root, parts, val);
-  }
-  return root;
-}
-
-// Split paths like "screen.name" and "list[0].title"
 function splitPath(p) {
   const parts = [];
   let buf = '';
@@ -67,10 +58,9 @@ function splitPath(p) {
       if (buf) { parts.push(buf); buf = ''; }
     } else if (c === '[') {
       if (buf) { parts.push(buf); buf = ''; }
-      // read index
       let j = i + 1, idx = '';
-      while (j < p.length && p[j] !== ']') { idx += p[j++]; }
-      i = j; // jump past ]
+      while (j < p.length && p[j] !== ']') idx += p[j++];
+      i = j;
       parts.push(Number(idx));
     } else {
       buf += c;
@@ -85,89 +75,18 @@ function setPath(obj, parts, value) {
   for (let i = 0; i < parts.length - 1; i++) {
     const k = parts[i];
     const nextIsIndex = typeof parts[i + 1] === 'number';
-    if (typeof k === 'number') {
-      if (!Array.isArray(cur)) cur = [];
-    }
     if (cur[k] == null) cur[k] = nextIsIndex ? [] : {};
     cur = cur[k];
   }
-  const last = parts[parts.length - 1];
-  cur[last] = value;
+  cur[parts[parts.length - 1]] = value;
 }
 
-// Batch Google Translate (multiple q params)
-async function translateBatch(texts, sl, tl) {
-  if (texts.length === 0) return [];
-  const params = new URLSearchParams();
-  params.set('client', 'gtx');
-  params.set('sl', sl);
-  params.set('tl', tl);
-  params.set('dt', 't');
-  // append multiple q
-  for (const t of texts) {
-    params.append('q', t);
+function inflate(map) {
+  const root = {};
+  for (const [key, val] of Object.entries(map)) {
+    setPath(root, splitPath(key), val);
   }
-  const url = `${ENDPOINT}?${params.toString()}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Translate request failed (${res.status}): ${body.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  // Response shape: [ [ [ translatedText, originalText, ... ], ... ], ... ]
-  const translated = [];
-  // When multiple q are sent, Google returns an array per input (sometimes folded). We’ll reconstruct by counting splits.
-  // Strategy: join each input with a unique delimiter, translate, then split back. But we can also rely on multiple q behavior:
-  // In practice, data is an array per input since ~2024. Still, handle both shapes:
-  // Case A: data is array-of-arrays (one per input)
-  if (Array.isArray(data) && Array.isArray(data[0]) && Array.isArray(data[0][0]) && Array.isArray(data[0][0][0]) === false) {
-    // Possibly single input; normalize
-  }
-  // Normalize to array of arrays: each item -> segments
-  const normalizeToTexts = (block) => {
-    if (!Array.isArray(block)) return [];
-    const segs = block[0];
-    if (!Array.isArray(segs)) return [];
-    return segs.map(seg => seg[0]).join('');
-  };
-
-  if (Array.isArray(data[0]) && Array.isArray(data[0][0]) && Array.isArray(data[0][0][0]) === false && data.length > 1) {
-    // Multiple inputs; each is its own block
-    for (const block of data) {
-      translated.push(normalizeToTexts(block));
-    }
-  } else {
-    // Fallback: treat the whole response as one block (single input)
-    translated.push(normalizeToTexts(data));
-  }
-  // If Google collapsed to single block while we sent multiple q, pad conservatively
-  if (translated.length !== texts.length) {
-    // Best-effort: duplicate or slice to match length
-    if (translated.length === 1) {
-      // assume positions map 1:1
-      return texts.map((_, i) => translated[0]);
-    }
-    // final fallback
-    const out = [];
-    for (let i = 0; i < texts.length; i++) out.push(translated[i % translated.length] || '');
-    return out;
-  }
-  return translated;
-}
-
-async function translateAll(map, sl, tl, batchSize = 50) {
-  const keys = Object.keys(map);
-  const values = keys.map(k => map[k]);
-
-  const out = {};
-  for (let i = 0; i < values.length; i += batchSize) {
-    const slice = values.slice(i, i + batchSize);
-    const translated = await translateBatch(slice, sl, tl);
-    translated.forEach((t, j) => {
-      out[keys[i + j]] = t;
-    });
-  }
-  return out;
+  return root;
 }
 
 function readJSONSafe(fp) {
@@ -186,6 +105,98 @@ function writeIfChanged(fp, obj) {
   return false;
 }
 
+// ---- Translation helpers ----
+
+// Unique delimiter to chunk results deterministically
+const DELIM = '⟦§§__CUT_HERE__§§⟧';
+
+// Retry with exponential backoff for transient HTTP errors/rate limits
+async function withRetries(fn, { retries = 4, minDelayMs = 500 } = {}) {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      // Only back off on network/5xx/429 errors; otherwise, rethrow immediately
+      const msg = String(err?.message || '');
+      const shouldRetry =
+        /ECONNRESET|ETIMEDOUT|502|503|504|429/.test(msg) || (err.status && [429, 500, 502, 503, 504].includes(err.status));
+      if (!shouldRetry || i === retries) break;
+      const wait = minDelayMs * Math.pow(2, i);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
+}
+
+// Safer: translate one big joined string, then split back by markers
+async function translateBatchViaJoin(texts, sl, tl) {
+  if (!texts.length) return [];
+
+  // Mark each input so we can reconstruct 1:1 even if Google mutates array shape.
+  const joined = texts.map((t, i) => `${DELIM}${i}${DELIM}${t}`).join('');
+
+  const params = new URLSearchParams();
+  params.set('client', 'gtx');
+  params.set('sl', sl);
+  params.set('tl', tl);
+  params.set('dt', 't');
+  params.set('q', joined);
+
+  const url = `${ENDPOINT}?${params.toString()}`;
+
+  const data = await withRetries(async () => {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      const error = new Error(`Translate failed (${res.status}): ${body.slice(0, 200)}`);
+      error.status = res.status;
+      throw error;
+    }
+    return res.json();
+  });
+
+  // data looks like: [ [ [ translatedText, originalText, ... ], ... ], ... ]
+  const segs = Array.isArray(data?.[0]) ? data[0] : [];
+  const translatedJoined = segs
+    .filter(Array.isArray) // skip nulls
+    .map(s => (Array.isArray(s) ? (s[0] ?? '') : ''))
+    .join('');
+
+  // Re-split to per-input outputs
+  const parts = translatedJoined.split(DELIM).slice(1); // drop leading empty
+  const out = new Array(texts.length).fill('');
+  for (let i = 0; i < parts.length; i += 2) {
+    const idx = Number(parts[i]);
+    const chunk = parts[i + 1] ?? '';
+    if (!Number.isNaN(idx) && idx >= 0 && idx < out.length) out[idx] += chunk;
+  }
+  return out;
+}
+
+function sanitizeSourceString(s) {
+  if (STRIP_SURROUNDING_QUOTES) {
+    return s.replace(/^['"]+|['"]+$/g, '');
+  }
+  return s;
+}
+
+async function translateAll(map, sl, tl, batchSize = 40) {
+  const keys = Object.keys(map);
+  const values = keys.map(k => sanitizeSourceString(map[k]));
+
+  const out = {};
+  for (let i = 0; i < values.length; i += batchSize) {
+    const slice = values.slice(i, i + batchSize);
+    const translated = await translateBatchViaJoin(slice, sl, tl);
+    translated.forEach((t, j) => {
+      out[keys[i + j]] = t;
+    });
+  }
+  return out;
+}
+
 // ---- Main ----
 (async function main() {
   const src = readJSONSafe(SOURCE_JSON);
@@ -194,16 +205,15 @@ function writeIfChanged(fp, obj) {
     process.exit(1);
   }
 
-  // 1) Flatten source to strings
   const flat = flatten(src);
 
-  // 2) Translate all strings (covers adds/edits)
+  // Translate
   const translatedMap = await translateAll(flat, SOURCE_LANG, TARGET_LANG);
 
-  // 3) Inflate back to nested structure (this prunes deletions automatically)
+  // Rebuild nested structure; this also prunes deleted keys automatically
   const targetObj = inflate(translatedMap);
 
-  // 4) Write if changed
+  // Write if changed
   const changed = writeIfChanged(TARGET_JSON, targetObj);
 
   console.log(
