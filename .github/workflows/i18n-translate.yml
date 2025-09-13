@@ -1,4 +1,4 @@
-name: Auto-translate JSON (SV + FR)
+name: Auto-translate JSON (SV + FR with GH cache)
 
 permissions:
   contents: write
@@ -24,6 +24,16 @@ jobs:
         with:
           node-version: '20'
 
+      # --- Restore translation cache ---
+      # We'll keep a directory .i18n-cache that holds per-locale JSON files
+      - name: Restore i18n cache
+        uses: actions/cache@v4
+        with:
+          path: .i18n-cache
+          key: i18n-cache-${{ github.ref_name }}  # one cache per branch
+          restore-keys: |
+            i18n-cache-
+
       # --- Swedish ---
       - name: Translate en.json -> sv-SE.json (only changed keys)
         env:
@@ -32,7 +42,7 @@ jobs:
           SOURCE_LANG: en-GB
           TARGET_LANG: sv-SE
           STRIP_QUOTES: "true"
-          I18N_CACHE: locales/.i18n-cache.sv-SE.json
+          I18N_CACHE: .i18n-cache/sv-SE.json   # now stored only in cache
         run: node scripts/translate-json.js
 
       # --- French ---
@@ -43,16 +53,25 @@ jobs:
           SOURCE_LANG: en-GB
           TARGET_LANG: fr-FR
           STRIP_QUOTES: "true"
-          I18N_CACHE: locales/.i18n-cache.fr-FR.json
+          I18N_CACHE: .i18n-cache/fr-FR.json
         run: node scripts/translate-json.js
 
+      # --- Save updated cache ---
+      - name: Save i18n cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .i18n-cache
+          key: i18n-cache-${{ github.ref_name }}
+
+      # --- Commit translations only (not the cache) ---
       - name: Commit changes (if any)
         if: github.ref == 'refs/heads/main'
         run: |
           if [[ -n "$(git status --porcelain)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add locales/sv-SE.json locales/fr-FR.json locales/.i18n-cache*.json
+            git add locales/sv-SE.json locales/fr-FR.json
             git commit -m "chore(i18n): sync sv-SE & fr-FR with en.json"
             git push
           else
