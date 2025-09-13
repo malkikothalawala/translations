@@ -1,10 +1,13 @@
 name: Auto-translate JSON
 
+# ✅ Grant write access so the job can commit back to the repo
+permissions:
+  contents: write
+
 on:
   push:
-    paths:
-      - 'locales/en.json'
-  pull_request:
+    branches:
+      - main
     paths:
       - 'locales/en.json'
   workflow_dispatch:
@@ -12,7 +15,9 @@ on:
 jobs:
   translate:
     runs-on: ubuntu-latest
+
     steps:
+      # Checkout the branch that triggered the push
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -23,16 +28,19 @@ jobs:
         with:
           node-version: '20'
 
+      # Translate English -> Swedish JSON
       - name: Translate en.json -> sv-SE.json
         env:
           SOURCE_JSON: locales/en.json
           TARGET_JSON: locales/sv-SE.json
-          SOURCE_LANG: en-GB         # matches your example; 'en' also works
-          TARGET_LANG: sv-SE         # 'sv' also works
+          SOURCE_LANG: en-GB        # or just 'en'
+          TARGET_LANG: sv-SE        # or just 'sv'
           STRIP_QUOTES: "true"
         run: node scripts/translate-json.js
 
+      # Commit only if there are actual changes
       - name: Commit changes (if any)
+        if: github.ref == 'refs/heads/main'
         run: |
           if [[ -n "$(git status --porcelain)" ]]; then
             git config user.name "github-actions[bot]"
