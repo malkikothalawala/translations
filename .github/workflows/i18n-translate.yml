@@ -12,7 +12,6 @@ on:
 jobs:
   translate:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,15 +23,13 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install deps (node-fetch)
-        run: npm i node-fetch@3
-
       - name: Translate en.json -> sv-SE.json
         env:
           SOURCE_JSON: locales/en.json
           TARGET_JSON: locales/sv-SE.json
-          SOURCE_LANG: en
-          TARGET_LANG: sv
+          SOURCE_LANG: en-GB         # matches your example; 'en' also works
+          TARGET_LANG: sv-SE         # 'sv' also works
+          STRIP_QUOTES: "true"
         run: node scripts/translate-json.js
 
       - name: Commit changes (if any)
