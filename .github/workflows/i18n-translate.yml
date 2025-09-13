@@ -1,4 +1,4 @@
-name: Auto-translate JSON
+name: Auto-translate JSON (SV + FR)
 
 permissions:
   contents: write
@@ -14,14 +14,17 @@ jobs:
   translate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      # --- Swedish ---
       - name: Translate en.json -> sv-SE.json (only changed keys)
         env:
           SOURCE_JSON: locales/en.json
@@ -29,8 +32,18 @@ jobs:
           SOURCE_LANG: en-GB
           TARGET_LANG: sv-SE
           STRIP_QUOTES: "true"
-          # Optional: custom cache path per locale
-          # I18N_CACHE: locales/.i18n-cache.sv-SE.json
+          I18N_CACHE: locales/.i18n-cache.sv-SE.json
+        run: node scripts/translate-json.js
+
+      # --- French ---
+      - name: Translate en.json -> fr-FR.json (only changed keys)
+        env:
+          SOURCE_JSON: locales/en.json
+          TARGET_JSON: locales/fr-FR.json
+          SOURCE_LANG: en-GB
+          TARGET_LANG: fr-FR
+          STRIP_QUOTES: "true"
+          I18N_CACHE: locales/.i18n-cache.fr-FR.json
         run: node scripts/translate-json.js
 
       - name: Commit changes (if any)
@@ -39,8 +52,8 @@ jobs:
           if [[ -n "$(git status --porcelain)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add locales/sv-SE.json locales/.i18n-cache*.json
-            git commit -m "chore(i18n): sync sv-SE.json with en.json"
+            git add locales/sv-SE.json locales/fr-FR.json locales/.i18n-cache*.json
+            git commit -m "chore(i18n): sync sv-SE & fr-FR with en.json"
             git push
           else
             echo "No changes to commit."
