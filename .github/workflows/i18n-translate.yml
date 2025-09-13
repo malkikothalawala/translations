@@ -1,4 +1,4 @@
-name: Auto-translate JSON (SV + FR with GH cache)
+name: Auto-translate
 
 permissions:
   contents: write
@@ -72,7 +72,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add locales/sv-SE.json locales/fr-FR.json
-            git commit -m "chore(i18n): sync sv-SE & fr-FR with en.json"
+            git commit -m "chore(i18n): translate changes"
             git push
           else
             echo "No changes to commit."
